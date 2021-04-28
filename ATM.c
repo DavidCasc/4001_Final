@@ -1,24 +1,26 @@
 #include "shared.h"
+void  SIGINT_handler(int sig);
 
 /*
  * The atm component will run in an infinite loop until the user presses
  * X.
  */
-int main(int argc, char *argv[]) {
-    //Declare Variables
+int main() {
+    /* Input variables*/
     char accountNum[BUFSIZ];
     char pin[BUFSIZ];
     char buffer[BUFSIZ];
+    char amountWithdrawn[BUFSIZ];
     char *concat;
+    size_t size;
+
+    /* Flags and Counters */
     int loggedin = 0;
     int loginAttempts = 0;
-    struct message_t pin_data;
-    int wrongCred = 0;
-    size_t size;
-    char amountWithdrawn[BUFSIZ];
-    int messageType = getpid();
 
-    //Start malloc
+    /* Message data */
+    struct message_t pin_data;
+    int messageType = getpid();
 
     //Create toATM message queue
     int toATMqueue = msgget((key_t) toATM_key, 0666 | IPC_CREAT);
@@ -33,6 +35,11 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "msgget failed with error: %d\n", errno);
         exit(EXIT_FAILURE);
     }
+    //Install signal
+    if (signal(SIGINT, SIGINT_handler) == SIG_ERR) {
+        printf("SIGINT install error\n");
+        exit(1);
+    }
 
     //Start an infinte loop
     while (1) {
@@ -42,6 +49,16 @@ int main(int argc, char *argv[]) {
                 printf("Please Enter Account Number:");
                 fflush(stdin);
                 fgets(accountNum, BUFSIZ, stdin);
+            }
+            //Exit if the user chooses X
+            if(strncmp(accountNum, "X", 1) == 0){
+                strcpy(pin_data.msg_text, "X");
+                pin_data.msg_type = messageType;
+                if (msgsnd(toDBqueue, (void *) &pin_data, 500, 0) == -1) {
+                    fprintf(stderr, "msgsnd failed\n");
+                    exit(EXIT_FAILURE);
+                }
+                break;
             }
 
             //Poll for user input for the pin number
@@ -77,9 +94,17 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "msgrcv failed with error: %d\n", errno);
                 exit(EXIT_FAILURE);
             }
+            //move to next while loop if correct
             if (strncmp(pin_data.msg_text, "OK\0", 3) == 0) {
                 loggedin = 1;
-            } else {
+
+            //do not increment if account was not found
+            } else if(strncmp(pin_data.msg_text, "ANF", 3) == 0) {
+                printf("Account was not found, try again.\n");
+                continue;
+
+            //increment the counter if the account was found but pin was wrong
+            }else {
                 loginAttempts++;
                 if(loginAttempts >= 3){
                     printf("Account is blocked\n");
@@ -90,7 +115,7 @@ int main(int argc, char *argv[]) {
         //Create a while loop for when the user is logged in
         while (loggedin) {
             //Create a menu option for user to select
-            printf("Press \"B\" for Balance or \"W\" for Withdrawals or \"D\" for Deposit or \"X\" to Quit:");
+            printf("Press \"B\" for Balance or \"W\" for Withdrawals or \"D\" for Deposit \"L\" to apply for a loan \" or \"X\" to Quit:");
             fflush(stdin);
             fgets(buffer, BUFSIZ, stdin);
             //Handle if the user chooses to view balance
@@ -175,15 +200,55 @@ int main(int argc, char *argv[]) {
                 }
 
             }
+            /* Handle Loan */
+            else if(strncmp(buffer, "L", 1) == 0){
+                //Create console ouotput for the menu option
+                printf("How much are you going to take out as a loan:");
+                fflush(stdin);
+                fgets(amountWithdrawn, BUFSIZ, stdin);
+
+                //Realloc so that the message can be concatenated to be sent  off
+                size = strlen(amountWithdrawn) + strlen("LOAN,") + 2;
+                concat = realloc(concat, size);
+                amountWithdrawn[strcspn(amountWithdrawn, "\n")] = '\0';
+                strcpy(concat, "LOAN,");
+                strcat(concat, amountWithdrawn);
+
+                //Transfer the concatenated message into the message body
+                strcpy(pin_data.msg_text, concat);
+                pin_data.msg_type = messageType;
+                if (msgsnd(toDBqueue, (void *) &pin_data, 500, 0) == -1) {
+                    fprintf(stderr, "msgsnd failed\n");
+                    exit(EXIT_FAILURE);
+                }
+
+                //Wait for a response back for the Server
+                if (msgrcv(toATMqueue, (void *) &pin_data, BUFSIZ, messageType, 0) == 0) {
+                    fprintf(stderr, "msgrcv failed with error: %d\n", errno);
+                    exit(EXIT_FAILURE);
+                }
+                if (strncmp(pin_data.msg_text, "LOAN_OK", 10) == 0) {
+                    printf("Loan Granted!\n");
+                }
+            }
             //Exit if the user chooses X
             else if(strncmp(buffer, "X", 1) == 0){
-                
+                strcpy(pin_data.msg_text, "X");
+                pin_data.msg_type = messageType;
+                if (msgsnd(toDBqueue, (void *) &pin_data, 500, 0) == -1) {
+                    fprintf(stderr, "msgsnd failed\n");
+                    exit(EXIT_FAILURE);
+                }
                 break;
             }
 
         }
 
-        free(concat);
+
         return 0;
     }
+}
+void  SIGINT_handler(int sig)
+{
+    exit(1);
 }
